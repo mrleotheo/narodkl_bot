@@ -3,6 +3,7 @@ from aiogram import Router, types
 from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 import database
+from datetime import datetime
 from config import ADMIN_ID
 
 router = Router()
@@ -66,7 +67,8 @@ async def cmd_start(message: types.Message, command: CommandObject):
             reply_markup=keyboard
         )
 
-# Секретная команда для скачивания файла базы данных
+
+# Секретная команда для скачивания файла базы данных с уникальным именем
 @router.message(Command("getdb"))
 async def cmd_getdb(message: types.Message):
     if str(message.from_user.id) != str(ADMIN_ID):
@@ -75,10 +77,14 @@ async def cmd_getdb(message: types.Message):
     db_path = "database.db"
 
     if os.path.exists(db_path):
-        # Отправляем файл базы данных в виде документа
+        # Получаем текущую дату и время в формате: ГГГГ-ММ-ДД_ЧЧ-ММ-СС
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        custom_filename = f"database_{current_time}.db"
+
+        # Отправляем файл, задав ему уникальное имя на лету
         await message.reply_document(
-            document=FSInputFile(db_path),
-            caption="📂 Актуальный файл базы данных SQLite"
+            document=FSInputFile(db_path, filename=custom_filename),
+            caption=f"📂 Актуальный файл базы данных SQLite\n🕒 Время выгрузки: {current_time}"
         )
     else:
         await message.reply("⚠️ Файл базы данных database.db пока не создан.")
