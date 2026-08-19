@@ -9,6 +9,7 @@ router = Router()
 
 @router.message(CommandStart())
 async def cmd_start(message: types.Message, command: CommandObject):
+    # Ловим UTM-метку или ставим direct по умолчанию
     utm_source = command.args if command.args else "direct"
     
     user_id = message.from_user.id
@@ -16,6 +17,7 @@ async def cmd_start(message: types.Message, command: CommandObject):
     first_name = message.from_user.first_name
     last_name = message.from_user.last_name
 
+    # Записываем переход и UTM-метку в SQLite
     await database.add_user(
         user_id=user_id,
         username=username,
@@ -24,27 +26,28 @@ async def cmd_start(message: types.Message, command: CommandObject):
         utm_source=utm_source
     )
 
-    # Настраиваем кнопки (кнопка опроса возвращена на место!)
+    # Настраиваем кнопки (кнопка опроса временно скрыта)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="Перейти в группу 💬", url="https://t.me/narodkl"),
             InlineKeyboardButton(text="Перейти в канал 📢", url="https://t.me/narodkl_ch")
         ],
         [
-            InlineKeyboardButton(text="Оставить заявку 📝", callback_data="apply_lead")
-        ],
-        [
+            # Кнопка создания заявки временно законсервирована
+            # InlineKeyboardButton(text="Оставить заявку 📝", callback_data="apply_lead")
             InlineKeyboardButton(text="Написать менеджеру 👨‍💻", url="https://t.me/narodkl_ru")
         ]
     ])
 
+    # Твой новый зафиксированный вариант текста приветствия
     welcome_text = (
-        "Привет!✌️ Наша команда - официальный представитель четырех ведущих стоматологических клиник в г. Хэйхэ (КНР). "
-        "Сами мы базируемся в Благовещенске (Амурская область). От Китая нас отделяет всего 800 метров через реку Амур. 🇷🇺🤝🇨🇳\n\n"
-        "❗️ Более 13 лет мы помогаем пациентам даже с самыми запущенными случаями (например, когда отсутствует 6 и более зубов) "
-        "кардинально решить проблему. Около 95% наших клиентов рекомендуют нас своим близким и друзьям (остальные просто предпочитают не афишировать лечение 😉).\n\n"
-        "💴 Стоматологические услуги в Китае стоят в 2–4 раза дешевле российских аналогов, а сам процесс лечения проходит в разы быстрее, "
-        "что критически важно, когда восстановить зубы нужно срочно. ⏳\n\n"
+        "Привет!✌️\n\nНаша команда сотрудничает с лучшими клиниками в г. Хэйхэ , Китай. "
+        "А по некоторым вопросам и с конкретными специалистами, чтобы гарантированно помочь вам.\n\n"
+        "Уже более 9 лет мы помогаем пациентам даже с самыми запущенными случаями "
+        "(например, когда отсутствует 6 и более зубов) кардинально решить проблему. "
+        "Около 93% наших клиентов рекомендуют нас своим близким и друзьям. А остальные просто предпочитают не афишировать лечение😉\n\n"
+        "💴 Стоматологические услуги в Китае стоят в 2–4 раза дешевле, чем в России, а сам процесс лечения проходит гораздо быстрее, "
+        "что критически важно, когда восстановить зубы нужно срочно⏳\n\n"
         "👇 Напишите менеджеру, чтобы оставить заявку ✍️"
     )
 
@@ -72,6 +75,7 @@ async def cmd_getdb(message: types.Message):
     db_path = "database.db"
 
     if os.path.exists(db_path):
+        # Отправляем файл базы данных в виде документа
         await message.reply_document(
             document=FSInputFile(db_path),
             caption="📂 Актуальный файл базы данных SQLite"
