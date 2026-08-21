@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import database
 from config import ADMIN_ID
+from utils.bitrix import create_bitrix_lead  # Импортируем нашу функцию отправки в Битрикс
 
 router = Router()
 
@@ -23,7 +24,6 @@ async def cmd_start(message: types.Message, command: CommandObject):
     first_name = message.from_user.first_name
     last_name = message.from_user.last_name
 
-    # Мгновенно записываем переход и UTM-метку в SQLite при запуске бота
     await database.add_user(
         user_id=user_id,
         username=username,
@@ -32,18 +32,17 @@ async def cmd_start(message: types.Message, command: CommandObject):
         utm_source=utm_source
     )
 
-    # Настраиваем кнопки
+    # Настраиваем новые кнопки (без канала, с переходом на конкретный пост)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Перейти в группу 💬", url="https://t.me/narodkl"),
-            InlineKeyboardButton(text="Перейти в канал 📢", url="https://t.me/narodkl_ch")
+            InlineKeyboardButton(text="Перейти в группу 💬", url="https://t.me/narodkl/46")
         ],
         [
             InlineKeyboardButton(text="Написать менеджеру 👨‍💻", url="https://t.me/narodkl_ru")
         ]
     ])
 
-    # Твой скорректированный текст приветствия
+    # Твой сохраненный вариант приветственного текста
     welcome_text = (
         "Привет!✌️\n\nНаша команда сотрудничает с лучшими клиниками в г. Хэйхэ , Китай. "
         "А по некоторым вопросам и с конкретными специалистами, чтобы гарантированно помочь вам.\n\n"
@@ -72,7 +71,7 @@ async def cmd_start(message: types.Message, command: CommandObject):
             parse_mode="HTML"
         )
 
-# Секретная команда для скачивания файла базы данных с уникальным именем
+# Секретная команда для скачивания файла базы данных
 @router.message(Command("getdb"))
 async def cmd_getdb(message: types.Message):
     if str(message.from_user.id) != str(ADMIN_ID):
@@ -91,24 +90,21 @@ async def cmd_getdb(message: types.Message):
     else:
         await message.reply("⚠️ Файл базы данных database.db пока не создан.")
 
-# 1. Секретная команда удаления базы данных
+# Секретная команда удаления базы данных
 @router.message(Command("rmdb"))
 async def cmd_rmdb(message: types.Message, state: FSMContext):
     if str(message.from_user.id) != str(ADMIN_ID):
         return  # Посторонних игнорируем
 
-    # Устанавливаем состояние ожидания пинкода
     await state.set_state(AdminStates.waiting_for_pin)
     await message.reply("⚠️ Вы ввели команду удаления базы данных, введите пинкод, чтобы совершить удаление.")
 
-# 2. Обработчик ввода пинкода
 @router.message(AdminStates.waiting_for_pin)
 async def process_rmdb_pin(message: types.Message, state: FSMContext):
     if str(message.from_user.id) != str(ADMIN_ID):
         await state.clear()
         return  # Посторонних игнорируем
 
-    # Очищаем состояние в любом случае (чтобы сбросить опрос)
     await state.clear()
 
     pin = message.text
@@ -116,7 +112,6 @@ async def process_rmdb_pin(message: types.Message, state: FSMContext):
         await message.reply("❌ Ошибка ввода. Удаление отменено.")
         return
 
-    # Проверяем пинкод
     if pin != "0123456789":
         await message.reply("❌ Неверный пинкод. Удаление базы данных отменено.")
         return
@@ -127,19 +122,43 @@ async def process_rmdb_pin(message: types.Message, state: FSMContext):
         current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         custom_filename = f"database_{current_time}_removed.db"
 
-        # Шаг А. Сначала выгружаем базу в виде бэкапа с суффиксом _removed
         await message.reply_document(
             document=FSInputFile(db_path, filename=custom_filename),
             caption=f"📦 Финальный бэкап перед удалением\n🕒 Время удаления: {current_time}"
         )
 
-        # Шаг Б. Физически удаляем файл базы и пересоздаем структуру [1.1.2]
         try:
             os.remove(db_path)
-            # Мгновенно инициализируем чистую базу заново [1.1.2]
             await database.init_db()
             await message.reply("✅ База данных успешно удалена с сервера и инициализирована заново.")
         except Exception as e:
             await message.reply(f"❌ Произошла ошибка при физическом удалении файла: {e}")
     else:
         await message.reply("⚠️ Файл базы данных database.db не найден на сервере.")
+
+# НОВАЯ СЕКРЕТНАЯ КОМАНДА: Тест вебхука Битрикс24
+@router.message(Command("whtest"))
+async def cmd_whtest(message: types.Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return  # Посторонних игнорируем
+
+    await message.reply("⌛️ Инициируем тестовый запрос в Битрикс24...")
+    
+    # Готовим вымышленные тестовые данные
+    test_name = "Тест Вебхука (Команда)"
+    test_phone = "+79991112233"
+    test_utm = "test_webhook_command"
+    
+    # Вызываем нашу функцию отправки
+    success = await create_bitrix_lead(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        real_name=test_name,
+        phone=test_phone,
+        utm_source=test_utm
+    )
+    
+    if success:
+        await message.reply("✅ Тест пройден! Битрикс24 ответил успешным кодом (200), проверь CRM.")
+    else:
+        await message.reply("❌ Ошибка отправки вебхука. Проверь вывод логов в консоли сервера.")
