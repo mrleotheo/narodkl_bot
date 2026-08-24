@@ -1,27 +1,39 @@
 import aiosqlite
+import os
 
 DB_PATH = "database.db"
 
 async def init_db():
-    """Создает таблицу пользователей с новыми полями."""
+    """Инициализирует БД и автоматически проводит миграцию для старых баз."""
     async with aiosqlite.connect(DB_PATH) as db:
+        # Создаем таблицу, если базы еще нет
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
                 last_name TEXT,
-                real_name TEXT,          -- Реальное имя из формы
-                phone TEXT,              -- Номер телефона из формы
+                real_name TEXT,
+                phone TEXT,
                 utm_source TEXT,
                 is_lead INTEGER DEFAULT 0,
+                reminder_sent INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         await db.commit()
 
+        # Безопасная миграция для существующих баз данных [1.1.2]
+        try:
+            # Для старых пользователей ставим статус 1 (отправлено), чтобы уберечь их от спама [1.1.2].
+            await db.execute("ALTER TABLE users ADD COLUMN reminder_sent INTEGER DEFAULT 1")
+            await db.commit()
+        except aiosqlite.OperationalError:
+            # Если колонка уже есть, SQLite выдаст ошибку, мы ее просто игнорируем
+            pass
+
 async def add_user(user_id: int, username: str | None, first_name: str | None, last_name: str | None, utm_source: str):
-    """Добавляет пользователя при старте."""
+    """Добавляет нового пользователя или обновляет данные существующего."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO users (id, username, first_name, last_name, utm_source)
@@ -63,3 +75,10 @@ async def save_lead_data(user_id: int, real_name: str, phone: str):
             (real_name, phone, user_id)
         )
         await db.commit()
+
+async def get_all_users():
+    """Возвращает ID всех зарегистрированных пользователей для рассылки."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id FROM users") as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]
