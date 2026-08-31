@@ -66,7 +66,10 @@ async def cmd_start(message: types.Message, command: CommandObject):
 
     photo_path = "welcome.jpg"
     if os.path.exists(photo_path):
-        await message.answer_photo(photo=FSInputFile(photo_path), caption=welcome_text, reply_markup=keyboard, parse_mode="HTML")
+        # 1. Сначала отправляем картинку без подписи [1.1.2]
+        await message.answer_photo(photo=FSInputFile(photo_path))
+        # 2. Следом отправляем длинный текст приветствия и клавиатуру обычным сообщением (до 4096 символов) [1.1.2, 1.2.3]
+        await message.answer(text=welcome_text, reply_markup=keyboard, parse_mode="HTML")
     else:
         await message.answer(text=welcome_text, reply_markup=keyboard, parse_mode="HTML")
 
