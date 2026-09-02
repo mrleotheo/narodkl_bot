@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramForbiddenError
 import database
 from config import ADMIN_ID
-from database import add_drip_post, get_all_drip_posts, delete_drip_post
+from database import add_drip_post, get_all_drip_posts, delete_drip_post, update_drip_post
 
 router = Router()
 
@@ -27,6 +27,16 @@ class PostStates(StatesGroup):
     waiting_for_text = State()
     waiting_for_buttons = State()
     waiting_for_confirm = State()
+
+# FSM для редактирования (замены) постов воронки
+class EditPostStates(StatesGroup):
+    waiting_for_step = State()
+    waiting_for_photo = State()
+    waiting_for_text = State()
+    waiting_for_buttons = State()
+    waiting_for_confirm = State()
+
+router.router_message = router.message  # Ошибка исправлена: символ @ удален!
 
 @router.message(CommandStart())
 async def cmd_start(message: types.Message, command: CommandObject):
@@ -66,9 +76,7 @@ async def cmd_start(message: types.Message, command: CommandObject):
 
     photo_path = "welcome.jpg"
     if os.path.exists(photo_path):
-        # 1. Сначала отправляем картинку без подписи [1.1.2]
         await message.answer_photo(photo=FSInputFile(photo_path))
-        # 2. Следом отправляем длинный текст приветствия и клавиатуру обычным сообщением (до 4096 символов) [1.1.2, 1.2.3]
         await message.answer(text=welcome_text, reply_markup=keyboard, parse_mode="HTML")
     else:
         await message.answer(text=welcome_text, reply_markup=keyboard, parse_mode="HTML")
@@ -79,6 +87,135 @@ async def cmd_manager(message: types.Message):
         [InlineKeyboardButton(text="Написать менеджеру 👨‍💻", url="https://t.me/narodkl_ru")]
     ])
     await message.answer("👇 Напишите менеджеру, чтобы оставить заявку ✍️", reply_markup=keyboard)
+
+
+# --- ЧЕРНЫЙ СПИСОК (БАНЯТ АДМИНЫ И СУПЕРАДМИН, СМОТРИТ И СНИМАЕТ БАН ТОЛЬКО СУПЕРАДМИН) ---
+
+@router.message(Command("ban"))
+async def cmd_ban(message: types.Message, command: CommandObject):
+    is_user_admin = await database.is_admin(message.from_user.id)
+    is_superadmin = str(message.from_user.id) == str(ADMIN_ID)
+    
+    if not is_user_admin and not is_superadmin:
+        return
+
+    if not command.args:
+        await message.reply("Используйте: `/ban [ID_пользователя или @username]`")
+        return
+
+    target = command.args.strip()
+    target_id = None
+    target_username = None
+
+    if target.isdigit():
+        target_id = int(target)
+    else:
+        # Убираем @ и переводим в нижний регистр для базы
+        target_username = target.lstrip("@").lower()
+        # Пробуем найти пользователя в нашей локальной базе
+        target_id = await database.get_user_by_username(target_username)
+
+    # Защита от бана суперадмина
+    if target_id and str(target_id) == str(ADMIN_ID):
+        await message.reply("❌ Суперадминистратора нельзя добавить в черный список!")
+        return
+
+    if target_id:
+        # Если нашли ID пользователя, баним его по ID (и по нику для истории) [1.1.2]
+        await database.add_to_blacklist(target_id, target_username)
+        # Сразу помечаем его неактивным для рассылок [1.1.2]
+        await database.update_user_active(target_id, 0)
+        await message.reply(f"🚫 Пользователь `{target_id}` успешно добавлен в черный список бота.")
+    else:
+        # Если пользователя еще нет в нашей базе, делаем ПРЕВЕНТИВНЫЙ БАН по нику [1.1.2]!
+        # Мы записываем только ник с ID = NULL. Бот поймает его и свяжет ID при его первом старте [1.1.2]!
+        await database.add_to_blacklist(None, target_username)
+        await message.reply(f"🚫 Пользователь с ником `@{target_username}` добавлен в превентивный черный список.")
+
+@router.message(Command("unban"))
+async def cmd_unban(message: types.Message, command: CommandObject):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return
+
+    if not command.args or not command.args.isdigit():
+        await message.reply("Используйте: `/unban ID_пользователя`")
+        return
+
+    target_id = int(command.args)
+    await database.remove_from_blacklist(target_id)
+    # Возвращаем статус активности
+    await database.update_user_active(target_id, 1)
+    await message.reply(f"✅ Пользователь `{target_id}` удален из черного списка.")
+
+@router.message(Command("listban"))
+async def cmd_listban(message: types.Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return
+
+    banned = await database.get_all_blacklisted()
+    if not banned:
+        await message.reply("📂 Черный список пуст.")
+        return
+
+    text = "🚫 **Черный список пользователей:**\n\n"
+    for item in banned:
+        id_text = f"`{item['user_id']}`" if item['user_id'] else "План превентивного бана"
+        username_text = f" (@{item['username']})" if item['username'] else ""
+        text += f"• {id_text}{username_text}\n"
+    await message.reply(text, parse_mode="Markdown")
+
+
+# --- АКТИВНЫЕ ПОДПИСЧИКИ И СТАТИСТИКА ---
+
+@router.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    is_user_admin = await database.is_admin(message.from_user.id)
+    is_superadmin = str(message.from_user.id) == str(ADMIN_ID)
+    
+    if not is_user_admin and not is_superadmin:
+        return
+
+    stats = await database.get_stats_data()
+    
+    await message.reply(
+        f"📊 **Текущая статистика бота:**\n\n"
+        f"👥 Всего переходов (БД): `{stats['total_users']}`\n"
+        f"✅ Активные подписчики: `{stats['active_users']}` *(получают рассылку)*\n"
+        f"🚫 Заблокированные в боте: `{stats['banned_users']}`"
+    )
+
+@router.message(Command("checkactive"))
+async def cmd_checkactive(message: types.Message):
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return
+
+    status_msg = await message.reply("⌛️ **Запущена проверка активности базы подписчиков...**\n\nБот бесшумно опрашивает каждого пользователя.")
+    
+    all_users = await database.get_all_users()
+    active_count = 0
+    inactive_count = 0
+
+    for user_id in all_users:
+        try:
+            await message.bot.send_chat_action(chat_id=user_id, action="typing")
+            await database.update_user_active(user_id, 1)
+            active_count += 1
+        except TelegramForbiddenError:
+            await database.update_user_active(user_id, 0)
+            inactive_count += 1
+        except Exception:
+            await database.update_user_active(user_id, 0)
+            inactive_count += 1
+        
+        await asyncio.sleep(0.05)
+
+    await status_msg.edit_text(
+        f"✅ **Глубокая проверка базы завершена!**\n\n"
+        f"👥 Проверено всего пользователей: `{len(all_users)}`\n"
+        f"🟢 Живых/активных контактов: `{active_count}`\n"
+        f"🔴 Отписались/заблокировали бота: `{inactive_count}`"
+    )
+
 
 # --- УПРАВЛЕНИЕ АДМИНИСТРАТОРАМИ (ТОЛЬКО ДЛЯ СУПЕРАДМИНА) ---
 
@@ -92,17 +229,18 @@ async def cmd_addadmin(message: types.Message, command: CommandObject):
     try:
         admin_id = int(command.args)
         await database.add_admin(admin_id, None)
-        # Динамически прописываем админу его меню
         from aiogram.types import BotCommand, BotCommandScopeChat
         admin_commands = [
             BotCommand(command="start", description="Перезапустить бота 🔄"),
             BotCommand(command="manager", description="Связаться с менеджером 👨‍💻"),
-            BotCommand(command="listposts", description="Просмотр воронки ⚙️")
+            BotCommand(command="listposts", description="Просмотр воронки ⚙️"),
+            BotCommand(command="stats", description="Статистика бота 📊"),
+            BotCommand(command="ban", description="Заблокировать пользователя 🚫")
         ]
         await message.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
-        await message.reply(f"👤 Пользователь `{admin_id}` успешно назначен администратором.")
+        await message.reply(f"👤 Пользователь `{admin_id}` назначен администратором.")
     except Exception as e:
-        await message.reply(f"Ошибка при добавлении: {e}")
+        await message.reply(f"Ошибка: {e}")
 
 @router.message(Command("deladmin"))
 async def cmd_deladmin(message: types.Message, command: CommandObject):
@@ -114,12 +252,12 @@ async def cmd_deladmin(message: types.Message, command: CommandObject):
     try:
         admin_id = int(command.args)
         await database.del_admin(admin_id)
-        # Сбрасываем меню до стандартного
         from aiogram.types import BotCommandScopeChat
         await message.bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
-        await message.reply(f"❌ Администратор `{admin_id}` разжалован до обычного пользователя.")
+        await message.reply(f"❌ Администратор `{admin_id}` разжалован.")
     except Exception as e:
-        await message.reply(f"Ошибка при удалении: {e}")
+        await message.reply(f"Ошибка: {e}")
+
 
 # --- УПРАВЛЕНИЕ БАЗОЙ ДАННЫХ (ТОЛЬКО ДЛЯ СУПЕРАДМИНА) ---
 
@@ -160,6 +298,7 @@ async def process_rmdb_pin(message: types.Message, state: FSMContext):
             await message.reply("✅ База данных успешно удалена и пересоздана.")
         except Exception as e:
             await message.reply(f"Ошибка: {e}")
+
 
 # --- ЭКСТРЕННАЯ РАССЫЛКА (ТОЛЬКО ДЛЯ СУПЕРАДМИНА) ---
 
@@ -267,10 +406,13 @@ async def process_confirm_send(callback_query: types.CallbackQuery, state: FSMCo
             else:
                 await callback_query.bot.send_message(chat_id=user_id, text=text, reply_markup=markup, parse_mode="HTML")
             success += 1
+            await database.update_user_active(user_id, 1)
         except TelegramForbiddenError:
             failed += 1
+            await database.update_user_active(user_id, 0)
         except Exception:
             failed += 1
+            await database.update_user_active(user_id, 0)
         await asyncio.sleep(0.05)
 
     await status_msg.edit_text(f"📢 **Рассылка завершена!**\n\n✅ Доставлено: `{success}`\n❌ Заблокировано: `{failed}`")
@@ -363,26 +505,22 @@ async def process_confirm_post(callback_query: types.CallbackQuery, state: FSMCo
     buttons = data.get("buttons")
 
     await callback_query.message.edit_reply_markup(reply_markup=None)
-    
-    # Сохраняем пост в базу
-    await add_drip_post(photo_id, text, buttons)
-    
+    await database.add_drip_post(photo_id, text, buttons)
     await callback_query.message.answer("✅ Шаг прогрева успешно добавлен в воронку!")
     await callback_query.answer()
 
 
-# --- ЛИСТИНГ И УДАЛЕНИЕ ШАГОВ ВОРОНКИ (ПРОСМОТР ДЛЯ АДМИНОВ, ИЗМЕНЕНИЯ ТОЛЬКО СУПЕРАДМИНУ) ---
+# --- ЗАМЕНА, ЛИСТИНГ И УДАЛЕНИЕ ШАГОВ ВОРОНКИ ---
 
 @router.message(Command("listposts"))
 async def cmd_listposts(message: types.Message):
-    # Проверяем, админ ли (или суперадмин)
     is_user_admin = await database.is_admin(message.from_user.id)
     is_superadmin = str(message.from_user.id) == str(ADMIN_ID)
     
     if not is_user_admin and not is_superadmin:
-        return  # Обычные пользователи команду не видят
+        return
 
-    posts = await get_all_drip_posts()
+    posts = await database.get_all_drip_posts()
     if not posts:
         await message.reply("⚠️ Воронка пуста. Добавьте посты через команду /addpost.")
         return
@@ -395,10 +533,10 @@ async def cmd_listposts(message: types.Message):
             for b in post["buttons"]:
                 keyboard_list.append([InlineKeyboardButton(text=b["text"], url=b["url"])])
         
-        # ЕСЛИ ЗАПРОСИЛ СУПЕРАДМИН: добавляем кнопку удаления!
-        # Обычные админы кнопку удаления не видят и удалить шаг не смогут [1.1.2]
+        # Только суперадмин видит кнопки замены и удаления! [1.1.2]
         if is_superadmin:
             keyboard_list.append([
+                InlineKeyboardButton(text=f"📝 Заменить Шаг {post['step_number']}", callback_data=f"edit_step_{post['step_number']}"),
                 InlineKeyboardButton(text=f"❌ Удалить Шаг {post['step_number']}", callback_data=f"del_step_{post['step_number']}")
             ])
             
@@ -412,19 +550,121 @@ async def cmd_listposts(message: types.Message):
 
 @router.callback_query(lambda c: c.data.startswith("del_step_"))
 async def process_del_step(callback_query: types.CallbackQuery):
-    # Удалять может ТОЛЬКО суперадмин! [1.1.2]
     if str(callback_query.from_user.id) != str(ADMIN_ID):
-        await callback_query.answer("Удалять шаги может только суперадминистратор!", show_alert=True)
+        await callback_query.answer("Права есть только у суперадминистратора!", show_alert=True)
         return
 
     step_to_delete = int(callback_query.data.replace("del_step_", ""))
-    
-    # Удаляем шаг и автоматически сдвигаем остальные в БД [1.1.2]
     await delete_drip_post(step_to_delete)
-    
-    await callback_query.message.answer(f"✅ Шаг №{step_to_delete} успешно удален. Последующие шаги сдвинуты назад.")
-    # Стираем кнопки, чтобы не кликнуть дважды
+    await callback_query.message.answer(f"✅ Шаг №{step_to_delete} удален. Последующие шаги сдвинуты назад.")
     await callback_query.message.edit_reply_markup(reply_markup=None)
+    await callback_query.answer()
+
+
+# --- ПОШАГОВЫЙ МАСТЕР ЗАМЕНЫ ОБЪЯВЛЕНИЯ (ТОЛЬКО ДЛЯ СУПЕРАДМИНА) ---
+
+@router.callback_query(lambda c: c.data.startswith("edit_step_"))
+async def process_edit_step_trigger(callback_query: types.CallbackQuery, state: FSMContext):
+    if str(callback_query.from_user.id) != str(ADMIN_ID):
+        await callback_query.answer("Заменять шаги может только суперадминистратор!", show_alert=True)
+        return
+
+    step_to_edit = int(callback_query.data.replace("edit_step_", ""))
+    await state.set_state(EditPostStates.waiting_for_photo)
+    await state.update_data(step_number=step_to_edit)
+    
+    await callback_query.message.edit_reply_markup(reply_markup=None)
+    await callback_query.message.answer(
+        f"🔄 **Мастер замены Шага №{step_to_edit}.**\n\n"
+        f"Отправьте новое фото для этого шага воронки или введите `/skip` для создания текстового поста (без картинки):"
+    )
+    await callback_query.answer()
+
+@router.message(EditPostStates.waiting_for_photo)
+async def process_edit_photo(message: types.Message, state: FSMContext):
+    if message.text == "/skip":
+        await state.update_data(photo_id=None)
+    elif message.photo:
+        await state.update_data(photo_id=message.photo[-1].file_id)
+    else:
+        await message.reply("Отправьте новое фото или `/skip`:")
+        return
+    await state.set_state(EditPostStates.waiting_for_text)
+    await message.reply("✍️ Введите новый HTML-текст для этого шага:")
+
+@router.message(EditPostStates.waiting_for_text)
+async def process_edit_text(message: types.Message, state: FSMContext):
+    await state.update_data(text=message.html_text)
+    await state.set_state(EditPostStates.waiting_for_buttons)
+    await message.reply("🔗 Введите новые кнопки построчно (`Текст | Ссылка`) или `/skip`:")
+
+@router.message(EditPostStates.waiting_for_buttons)
+async def process_edit_buttons(message: types.Message, state: FSMContext):
+    if message.text == "/skip":
+        await state.update_data(buttons=None)
+    else:
+        try:
+            btns = []
+            for line in message.text.split("\n"):
+                txt, url = map(str.strip, line.split("|"))
+                if not url.startswith("http"):
+                    raise ValueError
+                btns.append({"text": txt, "url": url})
+            await state.update_data(buttons=btns)
+        except Exception:
+            await message.reply("❌ Ошибка формата кнопки. Попробуйте еще раз или `/skip`:")
+            return
+
+    data = await state.get_data()
+    step_number = data.get("step_number")
+    photo_id = data.get("photo_id")
+    text = data.get("text")
+    buttons = data.get("buttons")
+
+    keyboard_list = []
+    if buttons:
+        for b in buttons:
+            keyboard_list.append([InlineKeyboardButton(text=b["text"], url=b["url"])])
+    keyboard_list.append([
+        InlineKeyboardButton(text="✅ Подтвердить замену шага", callback_data="confirm_edit_save"),
+        InlineKeyboardButton(text="❌ Отменить изменения", callback_data="cancel_edit")
+    ])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard_list)
+    await message.reply(f"👀 **Предпросмотр обновленного Шага №{step_number}:**")
+    if photo_id:
+        await message.answer_photo(photo=photo_id, caption=text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await message.answer(text=text, reply_markup=markup, parse_mode="HTML")
+    await state.set_state(EditPostStates.waiting_for_confirm)
+
+@router.callback_query(lambda c: c.data in ["confirm_edit_save", "cancel_edit"])
+async def process_confirm_edit(callback_query: types.CallbackQuery, state: FSMContext):
+    if str(callback_query.from_user.id) != str(ADMIN_ID):
+        await callback_query.answer("Доступ только суперадмину.", show_alert=True)
+        return
+
+    if callback_query.data == "cancel_edit":
+        await state.clear()
+        await callback_query.message.edit_reply_markup(reply_markup=None)
+        await callback_query.message.answer("❌ Замена шага воронки отменена.")
+        await callback_query.answer()
+        return
+
+    data = await state.get_data()
+    await state.clear()
+
+    step_number = data.get("step_number")
+    photo_id = data.get("photo_id")
+    text = data.get("text")
+    buttons = data.get("buttons")
+
+    await callback_query.message.edit_reply_markup(reply_markup=None)
+    
+    # Производим замену существующего поста в базе данных
+    await update_drip_post(step_number, photo_id, text, buttons)
+    
+    await callback_query.message.answer(f"✅ Шаг №{step_number} успешно заменен новой версией!")
     await callback_query.answer()
 
 
@@ -435,7 +675,7 @@ async def cmd_speedrun(message: types.Message):
     if str(message.from_user.id) != str(ADMIN_ID):
         return
 
-    posts = await get_all_drip_posts()
+    posts = await database.get_all_drip_posts()
     if not posts:
         await message.reply("⚠️ Воронка пуста. Сначала добавьте шаги через /addpost.")
         return

@@ -5,6 +5,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat
 from config import BOT_TOKEN, ADMIN_ID
 import database
 from utils.reminder import send_reminders
+from utils.middleware import BlacklistMiddleware  # Наш новый промежуточный слой ЧС
 
 # Импортируем наши обработчики
 from handlers import start, callback
@@ -24,7 +25,7 @@ async def set_dynamic_commands(bot: Bot):
     ]
     await bot.set_my_commands(default_commands)
 
-    # 2. Меню для суперадминистратора (тебя) - имеет все команды управления воронкой
+    # 2. Меню для суперадминистратора (тебя) - имеет все команды
     superadmin_commands = [
         BotCommand(command="start", description="Перезапустить бота 🔄"),
         BotCommand(command="manager", description="Связаться с менеджером 👨‍💻"),
@@ -35,7 +36,12 @@ async def set_dynamic_commands(bot: Bot):
         BotCommand(command="sndmsg", description="Массовая рассылка 📢"),
         BotCommand(command="getdb", description="Скачать базу данных 📂"),
         BotCommand(command="rmdb", description="Очистить базу данных ⚠️"),
-        BotCommand(command="speedrun", description="Тест воронки ⚡️")
+        BotCommand(command="speedrun", description="Тест воронки ⚡️"),
+        BotCommand(command="stats", description="Статистика бота 📊"),
+        BotCommand(command="checkactive", description="Проверить базу 👥"),
+        BotCommand(command="ban", description="Забанить пользователя 🚫"),
+        BotCommand(command="unban", description="Разбанить пользователя ✅"),
+        BotCommand(command="listban", description="Список ЧС 🚫")
     ]
     try:
         await bot.set_my_commands(superadmin_commands, scope=BotCommandScopeChat(chat_id=int(ADMIN_ID)))
@@ -47,7 +53,9 @@ async def set_dynamic_commands(bot: Bot):
     admin_commands = [
         BotCommand(command="start", description="Перезапустить бота 🔄"),
         BotCommand(command="manager", description="Связаться с менеджером 👨‍💻"),
-        BotCommand(command="listposts", description="Просмотр воронки ⚙️")
+        BotCommand(command="listposts", description="Просмотр воронки ⚙️"),
+        BotCommand(command="stats", description="Статистика бота 📊"),
+        BotCommand(command="ban", description="Забанить пользователя 🚫")
     ]
     try:
         admins = await database.get_all_admins()
@@ -75,6 +83,10 @@ async def main():
     # Инициализируем бота и диспетчер
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
+
+    # Подключаем промежуточный слой черного списка (Middleware) к диспетчеру [1.1.2]
+    dp.update.outer_middleware(BlacklistMiddleware())
+    logging.info("Системный слой черного списка успешно подключен.")
 
     # Устанавливаем динамические меню команд
     await set_dynamic_commands(bot)
