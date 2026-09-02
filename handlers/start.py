@@ -149,6 +149,7 @@ async def cmd_unban(message: types.Message, command: CommandObject):
 
 @router.message(Command("listban"))
 async def cmd_listban(message: types.Message):
+    # Просматривать список ЧС может ТОЛЬКО суперадмин! [1.1.2]
     if str(message.from_user.id) != str(ADMIN_ID):
         return
 
@@ -157,12 +158,13 @@ async def cmd_listban(message: types.Message):
         await message.reply("📂 Черный список пуст.")
         return
 
-    text = "🚫 **Черный список пользователей:**\n\n"
+    # Перевели разметку на HTML, чтобы избежать ошибок с символами подчеркивания в никах [1.2.3]
+    text = "🚫 <b>Черный список пользователей:</b>\n\n"
     for item in banned:
-        id_text = f"`{item['user_id']}`" if item['user_id'] else "План превентивного бана"
+        id_text = f"<code>{item['user_id']}</code>" if item['user_id'] else "План превентивного бана"
         username_text = f" (@{item['username']})" if item['username'] else ""
         text += f"• {id_text}{username_text}\n"
-    await message.reply(text, parse_mode="Markdown")
+    await message.reply(text, parse_mode="HTML")
 
 
 # --- АКТИВНЫЕ ПОДПИСЧИКИ И СТАТИСТИКА ---
